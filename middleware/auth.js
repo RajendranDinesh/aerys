@@ -6,7 +6,13 @@ const auth = (allowedRoles = ['customer']) => {
     try {
       const token = req.header('Authorization').replace('Bearer ', '');
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findOne({ _id: decoded.userId });
+
+      const userId = decoded.userId;
+
+      let user;
+
+      // MongoDB starts
+      user = await User.findOne({ _id: userId });
 
       if (!user) {
         throw new Error('User not found');
@@ -15,11 +21,43 @@ const auth = (allowedRoles = ['customer']) => {
       if (!allowedRoles.includes(user.role)) {
         throw new Error('Not authorized to access this route');
       }
+      // MongoDB ends
+
+      // MySQL starts
+      const query = `
+                SELECT r.role_name FROM user_roles ur
+                JOIN roles r ON ur.role_id = r.role_id
+                WHERE ur.user_id = ?
+            `;
+
+      const [roles] = await promisePool.execute(query, [userId]);
+
+      const userRoles = roles.map(role => role.role_name);
+
+      const hasAllowedRole = userRoles.some(role => allowedRoles.includes(role));
+
+      if (!hasAllowedRole) {
+        throw new Error('Not authorized to access this route');
+      }
+
+      user = decoded;
+      user.roles = userRoles;
+      // MySQL ends
 
       req.user = user;
+
       next();
+
     } catch (error) {
-      res.status(401).send({ error: error.message });
+      if (error.name === 'TokenExpiredError') {
+        return res.status(498).send({ message: '[AUTH] Token expired' });
+      }
+      else if (error.code === "ETIMEDOUT") {
+        return res.status(401).send({ message: '[AUTH] DB Connection failed' });
+      }
+      else {
+        return res.status(401).send({ message: `[AUTH] ${error.message}` });
+      }
     }
   }
 };
